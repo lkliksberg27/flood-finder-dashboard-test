@@ -44,7 +44,7 @@
   <h2 style="color:#94a3b8; margin-bottom:12px; font-size:14px; text-transform:uppercase; letter-spacing:1px;">Recent Readings</h2>
   <table id="historyTable">
     <thead>
-      <tr><th>Time</th><th>Temp</th><th>Pressure</th><th>Distance</th><th>Tilt</th><th>GPS</th><th>Battery</th></tr>
+      <tr><th>Time</th><th>Temp</th><th>Pressure</th><th>Distance</th><th>Tilt</th><th>GPS</th><th>Battery</th><th>TX</th><th>Charging</th></tr>
     </thead>
     <tbody id="historyBody"></tbody>
   </table>
@@ -115,7 +115,12 @@ function updateDashboard(data) {
     <div class="card">
       <h2>Battery</h2>
       <div class="value">${latest.battery_voltage?.toFixed(2) ?? '--'}<span class="unit">V</span></div>
-      <div class="sub">${latest.battery_percent ?? '--'}% &nbsp; WiFi: ${latest.wifi_rssi ?? '--'} dBm</div>
+      <div class="sub">${latest.battery_percent ?? '--'}% &nbsp; ${latest.is_charging ? '⚡ Charging' : '🔋 On battery'}</div>
+    </div>
+    <div class="card">
+      <h2>Connection</h2>
+      <div class="value" style="font-size:22px">${latest.tx_mode === 'lora' ? '📡 LoRa → Cellular' : '📶 WiFi Direct'}</div>
+      <div class="sub">${latest.tx_mode === 'lora' ? 'LoRa RSSI: '+(latest.lora_rssi ?? '--')+' dBm' : 'WiFi RSSI: '+(latest.wifi_rssi ?? '--')+' dBm'} &nbsp; Mode: ${latest.tx_mode ?? 'wifi'}</div>
     </div>
   `;
 
@@ -131,6 +136,8 @@ function updateDashboard(data) {
       <td>${r.tilt_angle?.toFixed(1) ?? '--'}°</td>
       <td>${r.gps_lat ? r.gps_lat.toFixed(4)+','+r.gps_lng.toFixed(4) : 'N/A'}</td>
       <td>${r.battery_percent ?? '--'}%</td>
+      <td>${r.tx_mode === 'lora' ? '📡' : '📶'}</td>
+      <td>${r.is_charging ? '⚡' : '—'}</td>
     </tr>`;
   }).join('');
 }
