@@ -164,20 +164,24 @@ function initMap() {
     container: 'map',
     style: 'mapbox://styles/mapbox/dark-v11',
     center: [DEFAULT_LNG, DEFAULT_LAT],
-    zoom: 13
+    zoom: 11
   });
   map.addControl(new mapboxgl.NavigationControl());
-  marker = new mapboxgl.Marker({ color: '#3b82f6' })
-    .setLngLat([DEFAULT_LNG, DEFAULT_LAT])
-    .setPopup(new mapboxgl.Popup().setHTML('<b>Flood Finder Sensor</b><br>Awaiting GPS fix...'))
-    .addTo(map);
 }
 
 function updateMap(lat, lng) {
   if (!lat || !lng || lat === 0) return;
   initMap();
-  if (marker) marker.setLngLat([lng, lat]).setPopup(new mapboxgl.Popup().setHTML('<b>Flood Finder Sensor</b><br>Live position'));
-  if (map) map.flyTo({ center: [lng, lat], zoom: 15 });
+  if (!marker) {
+    marker = new mapboxgl.Marker({ color: '#3b82f6' })
+      .setLngLat([lng, lat])
+      .setPopup(new mapboxgl.Popup().setHTML('<b>Flood Finder Sensor</b><br>Live GPS position'))
+      .addTo(map);
+    marker.togglePopup();
+  } else {
+    marker.setLngLat([lng, lat]);
+  }
+  map.flyTo({ center: [lng, lat], zoom: 15 });
 }
 
 fetchData();
