@@ -4,7 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Flood Finder - Live Sensor Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
+  #map { height:300px; border-radius:12px; border:1px solid #334155; }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; background:#0f172a; color:#e2e8f0; min-height:100vh; }
   .header { background:#1e293b; padding:20px; text-align:center; border-bottom:2px solid #3b82f6; }
@@ -107,10 +110,9 @@ function updateDashboard(data) {
       <div class="value">${latest.tilt_angle?.toFixed(1) ?? '--'}<span class="unit">°</span></div>
       <div class="sub">Corrected dist: ${(latest.distance_cm * Math.cos(latest.tilt_angle * Math.PI / 180)).toFixed(1)} cm</div>
     </div>
-    <div class="card">
-      <h2>GPS Location</h2>
-      <div class="value" style="font-size:18px">${latest.gps_lat?.toFixed(6) ?? '--'}, ${latest.gps_lng?.toFixed(6) ?? '--'}</div>
-      <div class="sub">${latest.gps_lat ? '<a href="https://maps.google.com/?q='+latest.gps_lat+','+latest.gps_lng+'" target="_blank" style="color:#3b82f6">Open in Maps</a>' : 'No fix'}</div>
+    <div class="card" style="grid-column: span 2;">
+      <h2>GPS Location — ${latest.gps_lat ? latest.gps_lat.toFixed(6)+', '+latest.gps_lng.toFixed(6) : 'No fix'}</h2>
+      <div id="map"></div>
     </div>
     <div class="card">
       <h2>Battery</h2>
@@ -123,6 +125,11 @@ function updateDashboard(data) {
       <div class="sub">${latest.tx_mode === 'lora' ? 'LoRa RSSI: '+(latest.lora_rssi ?? '--')+' dBm' : 'WiFi RSSI: '+(latest.wifi_rssi ?? '--')+' dBm'} &nbsp; Mode: ${latest.tx_mode ?? 'wifi'}</div>
     </div>
   `;
+
+  // Update map
+  if (latest.gps_lat && latest.gps_lat !== 0) {
+    setTimeout(() => updateMap(latest.gps_lat, latest.gps_lng), 100);
+  }
 
   // History table
   const tbody = document.getElementById('historyBody');
@@ -140,6 +147,24 @@ function updateDashboard(data) {
       <td>${r.is_charging ? '⚡' : '—'}</td>
     </tr>`;
   }).join('');
+}
+
+let map = null;
+let marker = null;
+
+function updateMap(lat, lng) {
+  if (!lat || !lng || lat === 0) return;
+  if (!map) {
+    map = L.map('map').setView([lat, lng], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+    marker = L.marker([lat, lng]).addTo(map)
+      .bindPopup('<b>Flood Finder Sensor</b><br>Live position').openPopup();
+  } else {
+    marker.setLatLng([lat, lng]);
+    map.panTo([lat, lng]);
+  }
 }
 
 fetchData();
