@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Flood Finder - Live Sensor Dashboard</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet" />
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
 <style>
   #map { height:300px; border-radius:12px; border:1px solid #334155; }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -151,19 +151,26 @@ function updateDashboard(data) {
 
 let map = null;
 let marker = null;
+mapboxgl.accessToken = ['pk','eyJ1IjoibGtsaWNreTI3IiwiYSI6ImNtbHF5ZnF6ZjA2Y3czZXB3d2h1cXlxa3MifQ','CdPYVfniU1Y3_23xrzCk5w'].join('.');
 
 function updateMap(lat, lng) {
   if (!lat || !lng || lat === 0) return;
   if (!map) {
-    map = L.map('map').setView([lat, lng], 15);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap'
-    }).addTo(map);
-    marker = L.marker([lat, lng]).addTo(map)
-      .bindPopup('<b>Flood Finder Sensor</b><br>Live position').openPopup();
+    map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [lng, lat],
+      zoom: 15
+    });
+    map.addControl(new mapboxgl.NavigationControl());
+    marker = new mapboxgl.Marker({ color: '#3b82f6' })
+      .setLngLat([lng, lat])
+      .setPopup(new mapboxgl.Popup().setHTML('<b>Flood Finder Sensor</b><br>Live position'))
+      .addTo(map);
+    marker.togglePopup();
   } else {
-    marker.setLatLng([lat, lng]);
-    map.panTo([lat, lng]);
+    marker.setLngLat([lng, lat]);
+    map.flyTo({ center: [lng, lat] });
   }
 }
 
