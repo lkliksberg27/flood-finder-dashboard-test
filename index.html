@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flood Finder - Live Sensor Dashboard</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background:#0f172a; color:#e2e8f0; min-height:100vh; }
+  .header { background:#1e293b; padding:20px; text-align:center; border-bottom:2px solid #3b82f6; }
+  .header h1 { font-size:24px; color:#3b82f6; }
+  .header p { color:#94a3b8; font-size:13px; margin-top:4px; }
+  .status { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+  .status.on { background:#22c55e; box-shadow:0 0 6px #22c55e; }
+  .status.off { background:#ef4444; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:16px; padding:20px; max-width:1200px; margin:0 auto; }
+  .card { background:#1e293b; border-radius:12px; padding:20px; border:1px solid #334155; }
+  .card h2 { font-size:14px; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; }
+  .value { font-size:32px; font-weight:700; color:#f1f5f9; }
+  .unit { font-size:16px; color:#64748b; margin-left:4px; }
+  .sub { font-size:13px; color:#64748b; margin-top:4px; }
+  .table-wrap { padding:20px; max-width:1200px; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; background:#1e293b; border-radius:12px; overflow:hidden; }
+  th { background:#334155; padding:10px 12px; text-align:left; font-size:12px; color:#94a3b8; text-transform:uppercase; }
+  td { padding:8px 12px; border-top:1px solid #334155; font-size:13px; }
+  .refresh { text-align:center; padding:10px; color:#64748b; font-size:12px; }
+  .no-data { text-align:center; padding:60px; color:#64748b; font-size:18px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Flood Finder - Live Sensor Dashboard</h1>
+  <p>Real-time data from Heltec V4 IoT device via Supabase</p>
+  <p style="margin-top:8px">
+    <span class="status" id="statusDot"></span>
+    <span id="statusText">Connecting...</span>
+  </p>
+</div>
+
+<div class="grid" id="cards"></div>
+
+<div class="table-wrap">
+  <h2 style="color:#94a3b8; margin-bottom:12px; font-size:14px; text-transform:uppercase; letter-spacing:1px;">Recent Readings</h2>
+  <table id="historyTable">
+    <thead>
+      <tr><th>Time</th><th>Temp</th><th>Pressure</th><th>Distance</th><th>Tilt</th><th>GPS</th><th>Battery</th></tr>
+    </thead>
+    <tbody id="historyBody"></tbody>
+  </table>
+</div>
+
+<div class="refresh" id="refreshInfo">Auto-refreshing every 5 seconds</div>
+
+<script>
+const SUPABASE_URL = 'https://ygoentpdkizwwskagacw.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlnb2VudHBka2l6d3dza2FnYWN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NDQxMjYsImV4cCI6MjA5MjMyMDEyNn0.kUISJBxYocLYx6FUg3TDWf7Q6fpal-KO7gitvxin43Q';
+
+async function fetchData() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/sensor_readings?order=created_at.desc&limit=20`,
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+    );
+    const data = await res.json();
+    updateDashboard(data);
+  } catch (e) {
+    document.getElementById('statusDot').className = 'status off';
+    document.getElementById('statusText').textContent = 'Connection error';
+  }
+}
+
+function updateDashboard(data) {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+
+  if (!data || data.length === 0) {
+    dot.className = 'status off';
+    txt.textContent = 'No data yet — start transmitting from device';
+    document.getElementById('cards').innerHTML = '<div class="no-data">Waiting for sensor data...<br><br>Upload firmware, connect WiFi, press encoder to start TX</div>';
+    return;
+  }
+
+  const latest = data[0];
+  const age = Math.round((Date.now() - new Date(latest.created_at).getTime()) / 1000);
+  dot.className = age < 60 ? 'status on' : 'status off';
+  txt.textContent = age < 60 ? `Live (${age}s ago)` : `Last reading ${age}s ago`;
+
+  document.getElementById('cards').innerHTML = `
+    <div class="card">
+      <h2>Temperature</h2>
+      <div class="value">${latest.temperature?.toFixed(2) ?? '--'}<span class="unit">°C</span></div>
+      <div class="sub">${(latest.temperature * 9/5 + 32).toFixed(1)}°F</div>
+    </div>
+    <div class="card">
+      <h2>Barometric Pressure</h2>
+      <div class="value">${latest.pressure?.toFixed(4) ?? '--'}<span class="unit">hPa</span></div>
+      <div class="sub">${(latest.pressure * 0.02953).toFixed(2)} inHg</div>
+    </div>
+    <div class="card">
+      <h2>Water Distance</h2>
+      <div class="value">${latest.distance_cm?.toFixed(1) ?? '--'}<span class="unit">cm</span></div>
+      <div class="sub">${(latest.distance_cm / 2.54).toFixed(1)} inches</div>
+    </div>
+    <div class="card">
+      <h2>Sensor Tilt Angle</h2>
+      <div class="value">${latest.tilt_angle?.toFixed(1) ?? '--'}<span class="unit">°</span></div>
+      <div class="sub">Corrected dist: ${(latest.distance_cm * Math.cos(latest.tilt_angle * Math.PI / 180)).toFixed(1)} cm</div>
+    </div>
+    <div class="card">
+      <h2>GPS Location</h2>
+      <div class="value" style="font-size:18px">${latest.gps_lat?.toFixed(6) ?? '--'}, ${latest.gps_lng?.toFixed(6) ?? '--'}</div>
+      <div class="sub">${latest.gps_lat ? '<a href="https://maps.google.com/?q='+latest.gps_lat+','+latest.gps_lng+'" target="_blank" style="color:#3b82f6">Open in Maps</a>' : 'No fix'}</div>
+    </div>
+    <div class="card">
+      <h2>Battery</h2>
+      <div class="value">${latest.battery_voltage?.toFixed(2) ?? '--'}<span class="unit">V</span></div>
+      <div class="sub">${latest.battery_percent ?? '--'}% &nbsp; WiFi: ${latest.wifi_rssi ?? '--'} dBm</div>
+    </div>
+  `;
+
+  // History table
+  const tbody = document.getElementById('historyBody');
+  tbody.innerHTML = data.map(r => {
+    const t = new Date(r.created_at).toLocaleTimeString();
+    return `<tr>
+      <td>${t}</td>
+      <td>${r.temperature?.toFixed(2) ?? '--'}°C</td>
+      <td>${r.pressure?.toFixed(2) ?? '--'}</td>
+      <td>${r.distance_cm?.toFixed(1) ?? '--'} cm</td>
+      <td>${r.tilt_angle?.toFixed(1) ?? '--'}°</td>
+      <td>${r.gps_lat ? r.gps_lat.toFixed(4)+','+r.gps_lng.toFixed(4) : 'N/A'}</td>
+      <td>${r.battery_percent ?? '--'}%</td>
+    </tr>`;
+  }).join('');
+}
+
+fetchData();
+setInterval(fetchData, 5000);
+</script>
+</body>
+</html>
