@@ -95,8 +95,8 @@
   /* MAP */
   #map { height: 380px; }
 
-  /* SENSOR GRID */
-  .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  /* SENSOR GRID — auto-fit so 5 cards balance into 2 or 3 cols depending on width */
+  .sensor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
   .sensor {
     padding: 16px; background: var(--panel-2); border-radius: 10px; border: 1px solid var(--border);
   }
@@ -233,8 +233,9 @@
       </div>
       <div class="panel-body">
         <div class="sensor-grid" id="sensorGrid">
-          <div class="sensor"><div class="sensor-label">Water Distance</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
-          <div class="sensor"><div class="sensor-label">Sensor Tilt</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
+          <div class="sensor"><div class="sensor-label">Water Distance (Raw)</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
+          <div class="sensor"><div class="sensor-label">Sensor Tilt Angle</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
+          <div class="sensor"><div class="sensor-label">Est. Height From Ground</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
           <div class="sensor"><div class="sensor-label">Pressure</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
           <div class="sensor"><div class="sensor-label">Temperature</div><div class="skeleton" style="height: 32px; margin: 6px 0;"></div></div>
         </div>
@@ -490,17 +491,26 @@ function renderSensorGrid(r) {
   const correctedDist = r.distance_cm != null && tiltMag != null
     ? r.distance_cm * Math.cos(tiltMag * Math.PI / 180)
     : null;
+  // Estimated height of the SENSOR above the ground (or water surface) it's
+  // currently pointed at. Equals the tilt-corrected distance — projecting
+  // the raw beam-path distance onto the vertical axis.
+  const heightAboveGround = correctedDist;
 
   document.getElementById('sensorGrid').innerHTML = `
     <div class="sensor">
       <div class="sensor-label">Water Distance (Raw)</div>
       <div class="sensor-value">${r.distance_cm != null ? r.distance_cm.toFixed(1) : '—'}<span class="unit">cm</span></div>
-      <div class="sensor-sub">${r.distance_cm != null ? (r.distance_cm / 2.54).toFixed(1) + ' in' : ''}</div>
+      <div class="sensor-sub">${r.distance_cm != null ? (r.distance_cm / 2.54).toFixed(1) + ' in · sensor beam-path to surface' : ''}</div>
     </div>
     <div class="sensor">
-      <div class="sensor-label">Tilt-Corrected Distance</div>
-      <div class="sensor-value">${correctedDist != null ? correctedDist.toFixed(1) : '—'}<span class="unit">cm</span></div>
-      <div class="tilt-viz">depth = raw × cos(|${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '?'}|°)</div>
+      <div class="sensor-label">Sensor Tilt Angle</div>
+      <div class="sensor-value">${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '—'}<span class="unit">°</span></div>
+      <div class="sensor-sub">${r.tilt_angle != null ? Math.abs(r.tilt_angle).toFixed(1) + '° off vertical · ' + (Math.abs(r.tilt_angle) <= 15 ? 'within correction range' : 'beyond 15° spec') : ''}</div>
+    </div>
+    <div class="sensor">
+      <div class="sensor-label">Est. Height From Ground</div>
+      <div class="sensor-value">${heightAboveGround != null ? heightAboveGround.toFixed(1) : '—'}<span class="unit">cm</span></div>
+      <div class="tilt-viz">height = raw × cos(|${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '?'}|°) = vertical drop to surface</div>
     </div>
     <div class="sensor">
       <div class="sensor-label">Barometric Pressure</div>
