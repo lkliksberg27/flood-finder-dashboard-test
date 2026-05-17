@@ -330,12 +330,41 @@
 const SUPABASE_URL = 'https://ygoentpdkizwwskagacw.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlnb2VudHBka2l6d3dza2FnYWN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NDQxMjYsImV4cCI6MjA5MjMyMDEyNn0.kUISJBxYocLYx6FUg3TDWf7Q6fpal-KO7gitvxin43Q';
 
-// Persistent state — keeps last known GPS + readings even when device pauses
+// Persistent state — every field tracks its own most-recent VALID value, so
+// e.g. the GPS card shows the last good fix even when the latest reading had
+// no fix, the battery card shows the last reported %, etc.
 const state = {
-  latest: null,            // latest reading object
-  lastGpsFix: null,        // { lat, lng, age_at_fix_ms } — never cleared unless overwritten
-  baselineDistance: null,  // first observed distance, used as the "dry" baseline for flood detection
+  latest: null,            // most recent reading object (for the timestamp pill)
+  lastGpsFix: null,        // { lat, lng, capturedAt } — never cleared once set
+  baselineDistance: null,  // first observed valid distance — used as "dry ground" reference
   pressureHistory: [],     // last N pressure readings, for storm-trend
+  lastKnown: {             // per-field most-recent valid value + when it was captured
+    distance_cm:      { value: null, at: null, device_id: null },
+    tilt_angle:       { value: null, at: null, device_id: null },
+    pressure:         { value: null, at: null, device_id: null },
+    temperature:      { value: null, at: null, device_id: null },
+    battery_voltage:  { value: null, at: null, device_id: null },
+    battery_percent:  { value: null, at: null, device_id: null },
+    is_charging:      { value: null, at: null, device_id: null },
+    tx_mode:          { value: null, at: null, device_id: null },
+    lora_rssi:        { value: null, at: null, device_id: null },
+    wifi_rssi:        { value: null, at: null, device_id: null },
+  },
+};
+
+// Per-field validity rules — what counts as "real data" for that field.
+// Returns true if the field's value on this row should overwrite the lastKnown.
+const isValid = {
+  distance_cm:     v => v != null && v > 0,        // 0 = no echo, treat as no data
+  tilt_angle:      v => v != null,                  // 0° is a valid tilt
+  pressure:        v => v != null && v > 800,      // atmospheric is ~1000; 0 = no read
+  temperature:     v => v != null,
+  battery_voltage: v => v != null && v > 0,
+  battery_percent: v => v != null && v >= 0,
+  is_charging:     v => v != null,
+  tx_mode:         v => v != null && v !== '',
+  lora_rssi:       v => v != null,
+  wifi_rssi:       v => v != null,
 };
 
 // Mapbox token (split to avoid GitHub secret-scanner false positives)
@@ -430,21 +459,56 @@ function render(rows) {
   if (rows.length > 0) {
     state.latest = rows[0];
 
-    // capture baseline (first ever reading is the "dry ground" reference)
-    if (state.baselineDistance === null && rows[rows.length - 1].distance_cm) {
-      state.baselineDistance = rows[rows.length - 1].distance_cm;
+    // Walk rows newest -> oldest. For each per-field tracker, the FIRST row
+    // we see that has a valid value for that field wins (i.e. most recent).
+    // GPS uses the same pattern but lives in its own state slot since the
+    // map needs lat+lng paired (not independent).
+    for (const r of rows) {
+      const at = new Date(r.created_at).getTime();
+      // Per-field most-recent-valid
+      for (const field of Object.keys(state.lastKnown)) {
+        const lk = state.lastKnown[field];
+        if (lk.value === null && isValid[field](r[field])) {
+          lk.value = r[field];
+          lk.at = at;
+          lk.device_id = r.device_id;
+        }
+      }
+      // GPS — need both lat and lng valid (non-zero, non-null)
+      if (state.lastGpsFix === null && r.gps_lat && r.gps_lng && r.gps_lat !== 0 && r.gps_lng !== 0) {
+        state.lastGpsFix = { lat: r.gps_lat, lng: r.gps_lng, capturedAt: at, device_id: r.device_id };
+      }
+    }
+    // After the initial fill, also update each tracker if a newer row has a
+    // newer-but-still-valid value (catches the case where state was populated
+    // on a previous fetch and this fetch has fresher data for some fields).
+    for (const r of rows) {
+      const at = new Date(r.created_at).getTime();
+      for (const field of Object.keys(state.lastKnown)) {
+        const lk = state.lastKnown[field];
+        if (isValid[field](r[field]) && (lk.at === null || at > lk.at)) {
+          lk.value = r[field];
+          lk.at = at;
+          lk.device_id = r.device_id;
+        }
+      }
+      if (r.gps_lat && r.gps_lng && r.gps_lat !== 0 && r.gps_lng !== 0) {
+        if (!state.lastGpsFix || at > state.lastGpsFix.capturedAt) {
+          state.lastGpsFix = { lat: r.gps_lat, lng: r.gps_lng, capturedAt: at, device_id: r.device_id };
+        }
+      }
+    }
+
+    // capture baseline (first ever VALID distance reading is the "dry ground" reference)
+    if (state.baselineDistance === null && state.lastKnown.distance_cm.value != null) {
+      // Use the OLDEST valid distance from this batch as baseline (best approximation
+      // of "dry ground" since the sensor starts dry then water rises)
+      const valid = rows.filter(r => isValid.distance_cm(r.distance_cm));
+      if (valid.length) state.baselineDistance = valid[valid.length - 1].distance_cm;
     }
 
     // pressure history (oldest → newest) for storm trend
-    state.pressureHistory = rows.slice().reverse().map(r => r.pressure).filter(p => p != null);
-
-    // persist most recent GPS fix that actually had data
-    for (const r of rows) {
-      if (r.gps_lat && r.gps_lng && r.gps_lat !== 0 && r.gps_lng !== 0) {
-        state.lastGpsFix = { lat: r.gps_lat, lng: r.gps_lng, capturedAt: new Date(r.created_at).getTime() };
-        break;
-      }
-    }
+    state.pressureHistory = rows.slice().reverse().map(r => r.pressure).filter(p => p != null && p > 800);
   }
 
   if (!state.latest) {
@@ -482,61 +546,84 @@ function render(rows) {
 }
 
 function renderSensorGrid(r) {
+  // Pull each value from state.lastKnown (most-recent VALID per field)
+  // rather than directly from r — so a stale field stays visible at its
+  // last good value instead of dropping to '—'.
+  const distance_cm     = state.lastKnown.distance_cm.value;
+  const tilt_angle      = state.lastKnown.tilt_angle.value;
+  const pressure        = state.lastKnown.pressure.value;
+  const temperature     = state.lastKnown.temperature.value;
+
   // Tilt-correction: cos(|tilt|) so negative angles work the same as positive
   // (the firmware can report tilt as either signed or unsigned; both map to
-  // the same depth correction since cos(-θ) = cos(θ) anyway, but Math.abs
-  // guards against firmware that reports angles like -146.5° relative to
-  // some reference frame instead of pure off-vertical).
-  const tiltMag = r.tilt_angle != null ? Math.min(Math.abs(r.tilt_angle), 89) : null;
-  const correctedDist = r.distance_cm != null && tiltMag != null
-    ? r.distance_cm * Math.cos(tiltMag * Math.PI / 180)
+  // the same depth correction since cos(-θ) = cos(θ) anyway).
+  const tiltMag = tilt_angle != null ? Math.min(Math.abs(tilt_angle), 89) : null;
+  const correctedDist = distance_cm != null && tiltMag != null
+    ? distance_cm * Math.cos(tiltMag * Math.PI / 180)
     : null;
-  // Estimated height of the SENSOR above the ground (or water surface) it's
-  // currently pointed at. Equals the tilt-corrected distance — projecting
-  // the raw beam-path distance onto the vertical axis.
   const heightAboveGround = correctedDist;
+
+  // Age helper: returns a small "Xs ago" / "Xm ago" badge if the value is
+  // significantly older than the latest reading, blank if it's current.
+  const ageBadge = (field) => {
+    const lk = state.lastKnown[field];
+    if (!lk.at || !state.latest) return '';
+    const valueAge = Date.now() - lk.at;
+    const latestAge = Date.now() - new Date(state.latest.created_at).getTime();
+    // Only show the badge if this field's value is meaningfully older than
+    // the latest row (>60s gap). Otherwise it's effectively current.
+    if (valueAge - latestAge < 60000) return '';
+    return `<span style="display:inline-block; padding:2px 6px; border-radius:6px; background:rgba(240,178,50,0.15); color:var(--amber); font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:0.8px; margin-left:6px; vertical-align:middle;">${formatAge(valueAge)}</span>`;
+  };
 
   document.getElementById('sensorGrid').innerHTML = `
     <div class="sensor">
-      <div class="sensor-label">Water Distance (Raw)</div>
-      <div class="sensor-value">${r.distance_cm != null ? r.distance_cm.toFixed(1) : '—'}<span class="unit">cm</span></div>
-      <div class="sensor-sub">${r.distance_cm != null ? (r.distance_cm / 2.54).toFixed(1) + ' in · sensor beam-path to surface' : ''}</div>
+      <div class="sensor-label">Water Distance (Raw)${ageBadge('distance_cm')}</div>
+      <div class="sensor-value">${distance_cm != null ? distance_cm.toFixed(1) : '—'}<span class="unit">cm</span></div>
+      <div class="sensor-sub">${distance_cm != null ? (distance_cm / 2.54).toFixed(1) + ' in · sensor beam-path to surface' : 'no valid reading yet'}</div>
     </div>
     <div class="sensor">
-      <div class="sensor-label">Sensor Tilt Angle</div>
-      <div class="sensor-value">${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '—'}<span class="unit">°</span></div>
-      <div class="sensor-sub">${r.tilt_angle != null ? Math.abs(r.tilt_angle).toFixed(1) + '° off vertical · ' + (Math.abs(r.tilt_angle) <= 15 ? 'within correction range' : 'beyond 15° spec') : ''}</div>
+      <div class="sensor-label">Sensor Tilt Angle${ageBadge('tilt_angle')}</div>
+      <div class="sensor-value">${tilt_angle != null ? tilt_angle.toFixed(1) : '—'}<span class="unit">°</span></div>
+      <div class="sensor-sub">${tilt_angle != null ? Math.abs(tilt_angle).toFixed(1) + '° off vertical · ' + (Math.abs(tilt_angle) <= 15 ? 'within correction range' : 'beyond 15° spec') : 'no tilt data yet'}</div>
     </div>
     <div class="sensor">
       <div class="sensor-label">Est. Height From Ground</div>
       <div class="sensor-value">${heightAboveGround != null ? heightAboveGround.toFixed(1) : '—'}<span class="unit">cm</span></div>
-      <div class="tilt-viz">height = raw × cos(|${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '?'}|°) = vertical drop to surface</div>
+      <div class="tilt-viz">height = raw × cos(|${tilt_angle != null ? tilt_angle.toFixed(1) : '?'}|°) = vertical drop to surface</div>
     </div>
     <div class="sensor">
-      <div class="sensor-label">Barometric Pressure</div>
-      <div class="sensor-value">${r.pressure != null ? r.pressure.toFixed(2) : '—'}<span class="unit">hPa</span></div>
-      <div class="sensor-sub">${r.pressure != null ? (r.pressure * 0.02953).toFixed(2) + ' inHg' : ''}</div>
+      <div class="sensor-label">Barometric Pressure${ageBadge('pressure')}</div>
+      <div class="sensor-value">${pressure != null ? pressure.toFixed(2) : '—'}<span class="unit">hPa</span></div>
+      <div class="sensor-sub">${pressure != null ? (pressure * 0.02953).toFixed(2) + ' inHg' : 'no pressure data yet'}</div>
     </div>
     <div class="sensor">
-      <div class="sensor-label">Temperature</div>
-      <div class="sensor-value">${r.temperature != null ? r.temperature.toFixed(1) : '—'}<span class="unit">°C</span></div>
-      <div class="sensor-sub">${r.temperature != null ? (r.temperature * 9 / 5 + 32).toFixed(1) + ' °F' : ''}</div>
+      <div class="sensor-label">Temperature${ageBadge('temperature')}</div>
+      <div class="sensor-value">${temperature != null ? temperature.toFixed(1) : '—'}<span class="unit">°C</span></div>
+      <div class="sensor-sub">${temperature != null ? (temperature * 9 / 5 + 32).toFixed(1) + ' °F' : 'no temp data yet'}</div>
     </div>
   `;
 }
 
 function renderStatusRow(r) {
+  // Use lastKnown values so cards stay populated even when the latest row
+  // happens to have a null/zero for that specific field.
+  const lkDist     = state.lastKnown.distance_cm.value;
+  const lkBattPct  = state.lastKnown.battery_percent.value;
+  const lkBattV    = state.lastKnown.battery_voltage.value;
+  const lkCharging = state.lastKnown.is_charging.value;
+
   // FLOOD STATUS — derived from baseline vs current distance
   const fc = document.getElementById('floodStatus');
   const fv = document.getElementById('floodStatusValue');
   const fs = document.getElementById('floodStatusSub');
-  if (r.distance_cm != null && state.baselineDistance != null) {
-    const drop = state.baselineDistance - r.distance_cm;
+  if (lkDist != null && state.baselineDistance != null) {
+    const drop = state.baselineDistance - lkDist;
     if (drop < 5) {
       fc.className = 'status-card alert-ok';
       fc.querySelector('.status-icon').className = 'status-icon ok';
       fv.textContent = 'Clear';
-      fs.textContent = `Baseline ${state.baselineDistance.toFixed(0)} cm · current ${r.distance_cm.toFixed(0)} cm`;
+      fs.textContent = `Baseline ${state.baselineDistance.toFixed(0)} cm · current ${lkDist.toFixed(0)} cm`;
     } else if (drop < 15) {
       fc.className = 'status-card alert-watch';
       fc.querySelector('.status-icon').className = 'status-icon watch';
@@ -550,7 +637,7 @@ function renderStatusRow(r) {
     }
   } else {
     fv.textContent = 'Calibrating';
-    fs.textContent = 'Waiting for baseline reading…';
+    fs.textContent = 'Waiting for valid distance reading…';
   }
 
   // STORM STATUS — barometric trend over last N samples
@@ -581,13 +668,13 @@ function renderStatusRow(r) {
     ss.textContent = `${state.pressureHistory.length}/3 samples`;
   }
 
-  // POWER STATUS
+  // POWER STATUS — use lastKnown so it stays populated across stale readings
   const pc = document.getElementById('powerStatus');
   const pv = document.getElementById('powerStatusValue');
   const ps = document.getElementById('powerStatusSub');
-  if (r.battery_percent != null) {
-    const charging = r.is_charging;
-    const pct = r.battery_percent;
+  if (lkBattPct != null) {
+    const charging = lkCharging;
+    const pct = lkBattPct;
     if (pct > 40 || charging) {
       pc.className = 'status-card alert-ok';
       pc.querySelector('.status-icon').className = 'status-icon ok';
@@ -599,7 +686,7 @@ function renderStatusRow(r) {
       pc.querySelector('.status-icon').className = 'status-icon alarm';
     }
     pv.textContent = `${pct}% ${charging ? '⚡' : ''}`;
-    ps.textContent = `${r.battery_voltage != null ? r.battery_voltage.toFixed(2) + 'V · ' : ''}${charging ? 'solar charging' : 'running on battery'}`;
+    ps.textContent = `${lkBattV != null ? lkBattV.toFixed(2) + 'V · ' : ''}${charging ? 'solar charging' : 'running on battery'}`;
   } else {
     pv.textContent = '—';
     ps.textContent = 'No battery data';
