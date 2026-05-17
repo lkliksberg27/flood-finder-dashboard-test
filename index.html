@@ -168,7 +168,7 @@
       <div class="brand-logo">FF</div>
       <div class="brand-text">
         <span class="brand-name">Flood Finder · Live City Dashboard</span>
-        <span class="brand-tag">Real-time flood detection · block by block</span>
+        <span class="brand-tag" id="deviceIdTag">Real-time flood detection · block by block</span>
       </div>
     </div>
     <div id="liveStatus" class="live-pill on">
@@ -469,6 +469,11 @@ function render(rows) {
 
   document.getElementById('latestTimestamp').textContent = formatAge(ageMs);
 
+  // Show the actual device id so you can tell which physical pod is reporting
+  if (latest.device_id) {
+    document.getElementById('deviceIdTag').textContent = `Pod: ${latest.device_id} · Real-time flood detection · block by block`;
+  }
+
   renderSensorGrid(latest);
   renderStatusRow(latest);
   renderHistoryTable(rows.length > 0 ? rows : [latest]);
@@ -476,8 +481,14 @@ function render(rows) {
 }
 
 function renderSensorGrid(r) {
-  const correctedDist = r.distance_cm != null && r.tilt_angle != null
-    ? r.distance_cm * Math.cos(r.tilt_angle * Math.PI / 180)
+  // Tilt-correction: cos(|tilt|) so negative angles work the same as positive
+  // (the firmware can report tilt as either signed or unsigned; both map to
+  // the same depth correction since cos(-θ) = cos(θ) anyway, but Math.abs
+  // guards against firmware that reports angles like -146.5° relative to
+  // some reference frame instead of pure off-vertical).
+  const tiltMag = r.tilt_angle != null ? Math.min(Math.abs(r.tilt_angle), 89) : null;
+  const correctedDist = r.distance_cm != null && tiltMag != null
+    ? r.distance_cm * Math.cos(tiltMag * Math.PI / 180)
     : null;
 
   document.getElementById('sensorGrid').innerHTML = `
@@ -489,7 +500,7 @@ function renderSensorGrid(r) {
     <div class="sensor">
       <div class="sensor-label">Tilt-Corrected Distance</div>
       <div class="sensor-value">${correctedDist != null ? correctedDist.toFixed(1) : '—'}<span class="unit">cm</span></div>
-      <div class="tilt-viz">depth = raw × cos(${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '?'}°)</div>
+      <div class="tilt-viz">depth = raw × cos(|${r.tilt_angle != null ? r.tilt_angle.toFixed(1) : '?'}|°)</div>
     </div>
     <div class="sensor">
       <div class="sensor-label">Barometric Pressure</div>
