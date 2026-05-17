@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flood Finder — Test Data Seeder</title>
+<style>
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0b1220; color: #e7eef9; padding: 40px; max-width: 800px; margin: 0 auto; line-height: 1.5; }
+  h1 { color: #4ea1ff; margin-bottom: 8px; }
+  p { color: #8a9ab2; margin-bottom: 20px; }
+  button { background: #4ea1ff; color: white; border: 0; padding: 12px 24px; font-size: 16px; font-weight: 600; border-radius: 8px; cursor: pointer; margin-right: 10px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { background: #ef5a5a; }
+  #log { background: #131c2f; border: 1px solid #283449; border-radius: 8px; padding: 16px; margin-top: 20px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+  .ok { color: #2fcf7d; }
+  .err { color: #ef5a5a; }
+  .info { color: #4ea1ff; }
+  .row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; }
+  label { font-size: 13px; color: #8a9ab2; }
+  input[type=number] { background: #1a253c; border: 1px solid #283449; color: #e7eef9; padding: 6px 10px; border-radius: 6px; width: 80px; }
+</style>
+</head>
+<body>
+
+<h1>Flood Finder — Test Data Seeder</h1>
+<p>This pushes realistic sensor readings into the live Supabase table so you can verify the dashboard renders them correctly. Each row is tagged with <code style="color:#f5a14a;">test_run = true</code> so you can wipe them later from Supabase (delete from <code>sensor_readings where test_run = true;</code>).</p>
+
+<div class="row">
+  <label>Number of readings:</label>
+  <input id="count" type="number" value="15" min="1" max="100">
+  <label>Spaced (seconds apart):</label>
+  <input id="spacing" type="number" value="0" min="0" max="60">
+  <span style="color:#8a9ab2;font-size:12px;">(0 = burst all at once)</span>
+</div>
+
+<button id="seedBtn" onclick="seed()">Seed test data</button>
+<button id="liveBtn" onclick="liveSeed()">Start live demo (1 reading every 5s)</button>
+<button id="stopBtn" onclick="stopLive()" disabled>Stop live demo</button>
+<button class="danger" onclick="wipe()">Wipe test data</button>
+<button onclick="window.open('https://flood-finder-dashboard-test.vercel.app', '_blank')">Open dashboard ↗</button>
+
+<div id="log">Ready. Click "Seed test data" to insert <span id="countEcho">15</span> rows.</div>
+
+<script>
+const SUPABASE_URL = 'https://ygoentpdkizwwskagacw.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlnb2VudHBka2l6d3dza2FnYWN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NDQxMjYsImV4cCI6MjA5MjMyMDEyNn0.kUISJBxYocLYx6FUg3TDWf7Q6fpal-KO7gitvxin43Q';
+
+const log = document.getElementById('log');
+function write(msg, cls = '') { log.innerHTML += `\n<span class="${cls}">${msg}</span>`; log.scrollTop = log.scrollHeight; }
+
+// Realistic Aventura/Golden Beach pod readings, slowly varying
+function generateReading(i, total) {
+  // Distance: starts at 145 cm (dry baseline), slowly drops as "water rises" toward the last row
+  // (showing the dashboard's Flood Status going from Clear → Watch → Flood)
+  const progress = i / Math.max(1, total - 1);
+  const distance = 145 - progress * 25 + (Math.random() - 0.5) * 0.8; // 145 → 120 cm gradient
+
+  // Tilt: stable around 12°, small jitter (validates cosine-correction display)
+  const tilt = 12.0 + (Math.random() - 0.5) * 0.6;
+
+  // Pressure: gentle drop (1015 → 1009 hPa) over the seed window — triggers "Storm incoming"
+  const pressure = 1015.2 - progress * 6.0 + (Math.random() - 0.5) * 0.1;
+
+  // Temp: ~26 °C with small jitter
+  const temperature = 26.0 + (Math.random() - 0.5) * 0.4;
+
+  // GPS: Golden Beach pole site (within a few meters of the canonical fix)
+  const gps_lat = 25.96120 + (Math.random() - 0.5) * 0.00005;
+  const gps_lng = -80.12250 + (Math.random() - 0.5) * 0.00005;
+
+  // Battery slowly discharging
+  const battery_percent = Math.max(45, 78 - i * 0.2);
+  const battery_voltage = 3.55 + battery_percent / 100 * 0.65;
+
+  // Mode alternates wifi/lora to show both pill colors
+  const isLora = i % 3 === 0;
+
+  return {
+    created_at: new Date().toISOString(),
+    temperature: +temperature.toFixed(2),
+    pressure: +pressure.toFixed(2),
+    distance_cm: +distance.toFixed(1),
+    tilt_angle: +tilt.toFixed(1),
+    gps_lat: +gps_lat.toFixed(6),
+    gps_lng: +gps_lng.toFixed(6),
+    battery_voltage: +battery_voltage.toFixed(2),
+    battery_percent: Math.round(battery_percent),
+    is_charging: Math.random() < 0.6,
+    tx_mode: isLora ? 'lora' : 'wifi',
+    lora_rssi: isLora ? -78 - Math.floor(Math.random() * 12) : null,
+    wifi_rssi: !isLora ? -52 - Math.floor(Math.random() * 14) : null,
+    test_run: true,
+  };
+}
+
+async function insertRow(row) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/sensor_readings`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal',
+    },
+    body: JSON.stringify(row),
+  });
+  return res;
+}
+
+document.getElementById('count').addEventListener('input', e => {
+  document.getElementById('countEcho').textContent = e.target.value;
+});
+
+async function seed() {
+  const btn = document.getElementById('seedBtn');
+  btn.disabled = true;
+  const n = parseInt(document.getElementById('count').value, 10) || 10;
+  const spacing = parseInt(document.getElementById('spacing').value, 10) || 0;
+  log.innerHTML = '';
+  write(`Seeding ${n} test readings…`, 'info');
+  let ok = 0, fail = 0;
+  for (let i = 0; i < n; i++) {
+    const row = generateReading(i, n);
+    try {
+      const res = await insertRow(row);
+      if (res.ok || res.status === 201) {
+        ok++;
+        write(`  ✓ row ${i + 1}/${n}  dist=${row.distance_cm}cm  tilt=${row.tilt_angle}°  pressure=${row.pressure}hPa  mode=${row.tx_mode}`, 'ok');
+      } else {
+        fail++;
+        const body = await res.text();
+        write(`  ✗ row ${i + 1}/${n}  HTTP ${res.status}  ${body.slice(0, 200)}`, 'err');
+        if (res.status === 401 || res.status === 403) {
+          write(`\n  This means the table has Row-Level Security blocking anon inserts.`, 'err');
+          write(`  Open Supabase → Authentication → Policies → sensor_readings`, 'err');
+          write(`  Add a policy that allows INSERT for the anon role (or for everyone), then re-run.`, 'err');
+          write(`  Or use the service-role key here instead of the anon key.`, 'err');
+          break;
+        }
+        if (res.status === 404) {
+          write(`\n  404 means the 'test_run' column doesn't exist on sensor_readings.`, 'err');
+          write(`  Either add it (ALTER TABLE sensor_readings ADD COLUMN test_run boolean DEFAULT false;)`, 'err');
+          write(`  …or remove the test_run field from the seed row in this file and re-run.`, 'err');
+          break;
+        }
+      }
+    } catch (e) {
+      fail++;
+      write(`  ✗ row ${i + 1}/${n}  network error: ${e.message}`, 'err');
+    }
+    if (spacing > 0 && i < n - 1) {
+      await new Promise(r => setTimeout(r, spacing * 1000));
+    }
+  }
+  write(`\nDone. ${ok} inserted, ${fail} failed.`, ok > 0 ? 'ok' : 'err');
+  if (ok > 0) {
+    write(`\nNow open the dashboard. The latest reading + map marker + Flood/Storm/Power status cards should all populate.`, 'info');
+    write(`https://flood-finder-dashboard-test.vercel.app`, 'info');
+  }
+  btn.disabled = false;
+}
+
+let liveInterval = null, liveCounter = 0;
+async function liveSeed() {
+  liveCounter = 0;
+  document.getElementById('liveBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  log.innerHTML = '';
+  write('Live demo: inserting one reading every 5 seconds.', 'info');
+  write('Open the dashboard side-by-side — it should refresh and reflect each new row.\n', 'info');
+  const tick = async () => {
+    const row = generateReading(liveCounter, 100);
+    try {
+      const res = await insertRow(row);
+      if (res.ok || res.status === 201) {
+        write(`  ✓ live ${++liveCounter}  dist=${row.distance_cm}cm  pressure=${row.pressure}hPa`, 'ok');
+      } else {
+        write(`  ✗ live ${liveCounter}  HTTP ${res.status}`, 'err');
+      }
+    } catch (e) {
+      write(`  ✗ live ${liveCounter}  ${e.message}`, 'err');
+    }
+  };
+  await tick();
+  liveInterval = setInterval(tick, 5000);
+}
+function stopLive() {
+  if (liveInterval) clearInterval(liveInterval);
+  liveInterval = null;
+  document.getElementById('liveBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  write('\nLive demo stopped.', 'info');
+}
+
+async function wipe() {
+  if (!confirm('Delete ALL rows where test_run = true from sensor_readings?')) return;
+  log.innerHTML = '';
+  write('Wiping rows with test_run = true…', 'info');
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/sensor_readings?test_run=eq.true`, {
+      method: 'DELETE',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+    });
+    if (res.ok || res.status === 204) {
+      write('  ✓ all test_run = true rows deleted', 'ok');
+    } else {
+      write(`  ✗ HTTP ${res.status}  ${await res.text()}`, 'err');
+      write(`  (DELETE likely blocked by RLS — delete manually in Supabase admin → Table Editor → filter test_run = true → delete selected.)`, 'err');
+    }
+  } catch (e) {
+    write(`  ✗ ${e.message}`, 'err');
+  }
+}
+</script>
+
+</body>
+</html>
